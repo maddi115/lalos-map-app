@@ -17,7 +17,7 @@
   let step = 1;
   let anchor = null;
   let userCenter = null;
-  let imgURL = "";
+  let imgURL = "";   
   let commentText = "";
   let tAct = 0;
   let savedId = "";
@@ -314,22 +314,22 @@
     bottom: 12px;
     transform: translateX(-50%);
     z-index: 2147483647;
-    width: 560px;
+    width: 360px;
     max-width: 92vw;
     color: #e5e7eb;
     background: #000;
-    border-radius: 14px;
-    box-shadow: 0 16px 40px rgba(0,0,0,.55);
+     border-radius: 1.5rem;
+   
     padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    
   }
   .ui.compact {
     width: auto;
     max-width: none;
     padding: 8px 10px;
-    border-radius: 12px;
+    border-radius: none;
     flex-direction: row;
     align-items: center;
   }
@@ -342,12 +342,12 @@
   .input, .btn, .tag {
     padding: 10px 12px;
     border: 0;
-    border-radius: 10px;
-    background: #0a0a0a;
+    border-radius: 1.5rem;
     color: #e5e7eb;
     outline: 0;
     font-family: inherit;
-    font-size: 14px;
+    font-size: 20px; background: #000;
+    font-weight: 500;
   }
   .input.tiny {
     padding: 6px 8px;
@@ -357,20 +357,19 @@
   .btn {
     cursor: pointer;
   }
-  .btn:hover {
+.btn:hover {
     background: #111;
   }
   .btn[disabled] {
     opacity: .5;
     cursor: not-allowed;
-  }
-  .tag {
-    font-weight: 600;
-    font-size: 12px;
-  }
-  .help {
-    font-weight: 600;
-    font-size: 12px;
-    opacity: .9;
-  }
+  } 
+.tag, .help {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.help {
+  opacity: .9;
+}
 </style>
