@@ -304,72 +304,37 @@
 {/if}
 
 <style>
-  .map-container {
-    position: fixed;
-    inset: 0;
-  }
-  .ui {
-    position: fixed;
-    left: 50%;
-    bottom: 12px;
-    transform: translateX(-50%);
-    z-index: 2147483647;
-    width: 360px;
-    max-width: 92vw;
-    color: #e5e7eb;
-    background: #000;
-     border-radius: 1.5rem;
-   
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    
-  }
-  .ui.compact {
-    width: auto;
-    max-width: none;
-    padding: 8px 10px;
-    border-radius: none;
-    flex-direction: row;
-    align-items: center;
-  }
-  .row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .input, .btn, .tag {
-    padding: 10px 12px;
-    border: 0;
-    border-radius: 1.5rem;
-    color: #e5e7eb;
-    outline: 0;
-    font-family: inherit;
-    font-size: 20px; background: #000;
-    font-weight: 500;
-  }
-  .input.tiny {
-    padding: 6px 8px;
-    min-width: 120px;
-    font-size: 12px;
-  }
-  .btn {
-    cursor: pointer;
-  }
-.btn:hover {
-    background: #111;
-  }
-  .btn[disabled] {
-    opacity: .5;
-    cursor: not-allowed;
-  } 
-.tag, .help {
-  font-weight: 600;
-  font-size: 12px;
+:root{--fg:#e5e7eb;--bg:#000;--bg-s:#0a0a0a;--bg-h:#111;--r:1.5rem;--g:8px}
+
+.map-container{position:fixed;inset:0}
+
+.ui{
+  position:fixed;left:50%;bottom:12px;translate:-50% 0;z-index:2147483647;
+  width:360px;max-width:92vw;color:var(--fg);background:var(--bg);
+  border-radius:var(--r);padding:12px;display:flex;flex-direction:column;
+  container-type:inline-size;
+}
+.ui .row{display:flex;gap:var(--g);align-items:center;flex-wrap:wrap}
+
+.ui :where(.input,.btn,.tag){
+  padding:10px 12px;border:0;border-radius:var(--r);color:inherit;outline:0;
+  font:inherit;background:var(--bg-s)
 }
 
-.help {
-  opacity: .9;
+.ui .input.tiny{padding:6px 8px;min-width:120px;font-size:12px}
+
+.ui .btn{cursor:pointer}
+.ui .btn:hover{background:var(--bg-h)}
+.ui .btn[disabled]{opacity:.5;cursor:not-allowed}
+
+.ui :where(.tag,.help){font-weight:600;font-size:12px}
+
+.ui .help{opacity:.9}
+
+@container (width<420px){
+  .ui{
+    width:auto;max-width:none;padding:8px 10px;border-radius:0;
+    flex-direction:row;align-items:center
+  }
 }
 </style>
