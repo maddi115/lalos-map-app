@@ -63,11 +63,38 @@
     geoSize = { w: baseSize.w * r.x * s, h: baseSize.h * r.y * s };
   }
 
-  // --- CORE LOGIC (loadFile is unchanged for now, but we'll need an upload API endpoint) ---
+  // --- UPDATED CORE LOGIC: loadFile now handles image upload to /api/upload ---
   async function loadFile(e) {
-    // We will need to create an upload endpoint and call it here.
-    // For now, this logic can stay as a placeholder.
-    alert('File upload functionality needs to be wired up to a new API endpoint.');
+    const file = e.target.files[0];
+    if (!file || !anchor) return;
+
+    isUploading = true;
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) throw new Error('Upload failed');
+
+      const { url } = await response.json();
+      imgURL = url; 
+
+      const im = new Image();
+      im.onload = () => {
+        natSize = { w: im.naturalWidth, h: im.naturalHeight };
+        applyMedia();
+      };
+      im.src = url;
+    } catch (err) {
+      console.error(err);
+      alert('Upload failed. Try again.');
+    } finally {
+      isUploading = false;
+    }
   }
 
   function applyMedia() {
@@ -84,7 +111,6 @@
     mediaReady = true;
   }
   
-  // --- CORE LOGIC (geoOnce and placeOnClick are unchanged) ---
   function geoOnce() {
     navigator.geolocation.getCurrentPosition(p => {
       userCenter = { lng: p.coords.longitude, lat: p.coords.latitude };
@@ -104,19 +130,17 @@
     }
   }
   
-  // --- CHANGE: This function now uses our SvelteKit API endpoint ---
   async function saveAndCompact() {
     isCompact = true;
     try {
-      // We use 'fetch' to call our OWN API endpoint that we created
       const response = await fetch('/api/posts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          lng: anchor.lng,
-          lat: anchor.lat,
           comment: commentText || null,
-          // We can add the other fields like mediaType, url, etc. here
+          lat: anchor.lat,
+          lng: anchor.lng,
+          image_url: imgURL // Send the new image URL
         })
       });
 
@@ -124,11 +148,10 @@
 
       const newPost = await response.json();
       if (newPost.id) savedId = newPost.id;
-      
-      // Add the new marker to the map immediately
+
       new maplibregl.Marker()
         .setLngLat([newPost.lng, newPost.lat])
-        .setPopup(new maplibreg-gl.Popup().setText(newPost.comment))
+        .setPopup(new maplibregl.Popup().setText(newPost.comment))
         .addTo(map);
 
     } catch (err) {
@@ -137,7 +160,7 @@
     }
   }
 
-  // --- CHANGE: onMount now adds markers from the data prop ---
+  // --- UPDATED: Added validation to prevent map crash ---
   onMount(() => {
     deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
     localStorage.setItem(C.LS_DEV, deviceId);
@@ -159,9 +182,33 @@
     // Add markers for posts loaded from the database
     map.on('load', () => {
       for (const post of data.posts) {
+        
+        // **CRITICAL FIX:** Validate lat/lng before creating marker
+        const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
+
+        if (!isLatLngValid) {
+          console.warn(`Skipping post ID ${post.id}: Invalid coordinates (lat: ${post.lat}, lng: ${post.lng})`);
+          continue; 
+        }
+
+        let popupHTML = `<p style="margin: 0; font-weight: 600;">${post.comment || 'No comment'}</p>`;
+
+        if (post.image_url) {
+          popupHTML = `
+            <div style="padding: 0; max-width: 250px;">
+              <img 
+                src="${post.image_url}" 
+                alt="${post.comment || 'Uploaded image'}" 
+                style="width: 100%; height: auto; border-radius: 8px; margin-bottom: 8px;"
+              />
+              <p style="margin: 0; font-size: 0.9rem;">${post.comment || 'No comment'}</p>
+            </div>
+          `;
+        }
+
         new maplibregl.Marker()
           .setLngLat([post.lng, post.lat])
-          .setPopup(new maplibregl.Popup().setText(post.comment))
+          .setPopup(new maplibregl.Popup().setHTML(popupHTML)) // Use setHTML here
           .addTo(map);
       }
     });
@@ -176,7 +223,7 @@
     };
   });
   
-  // --- REACTIVE EFFECTS (All unchanged) ---
+  // --- REACTIVE EFFECTS (Unchanged) ---
   $: if (browser && map && userCenter) {
     const r = C.RAD_M;
     const circle = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [Array.from({length: 97}, (_, i) => { const a = i/96*2*Math.PI; const p = Geo.off(userCenter.lng, userCenter.lat, Math.cos(a)*r, Math.sin(a)*r); return [p.lng, p.lat]})]}};
@@ -282,33 +329,93 @@
   <div class="ui compact">
     <span class="tag">Size: {curPx}px / {C.MAXPX}px</span>
     <input class="input tiny" type="text" maxlength="15" placeholder="comment…" bind:value={commentText}/>
+    <a href="{imgURL}" target="_blank" style="font-size: 0.9rem; color: #1e90ff; text-decoration: none;">View Image</a>
   </div>
 {/if}
 
 <style>
-:root{--fg:#e5e7eb;--bg:#000;--bg-s:#0a0a0a;--bg-h:#111;--r:1.5rem;--g:8px}
-.map-container{position:fixed;inset:0}
-.ui{
-  position:fixed;left:50%;bottom:12px;translate:-50% 0;z-index:2147483647;
-  width:360px;max-width:92vw;color:var(--fg);background:var(--bg);
-  border-radius:var(--r);padding:12px;display:flex;flex-direction:column;
-  container-type:inline-size;
-}
-.ui .row{display:flex;gap:var(--g);align-items:center;flex-wrap:wrap}
-.ui :where(.input,.btn,.tag){
-  padding:10px 12px;border:0;border-radius:var(--r);color:inherit;outline:0;
-  font:inherit;background:var(--bg-s)
-}
-.ui .input.tiny{padding:6px 8px;min-width:120px;font-size:12px}
-.ui .btn{cursor:pointer}
-.ui .btn:hover{background:var(--bg-h)}
-.ui .btn[disabled]{opacity:.5;cursor:not-allowed}
-.ui :where(.tag,.help){font-weight:600;font-size:12px}
-.ui .help{opacity:.9}
-@container (width<420px){
-  .ui{
-    width:auto;max-width:none;padding:8px 10px;border-radius:0;
-    flex-direction:row;align-items:center
+  :root {
+    --fg: #e5e7eb;
+    --bg: #000;
+    --bg-s: #0a0a0a;
+    --bg-h: #111;
+    --r: 1.5rem;
+    --g: 8px;
   }
-}
+  
+  .map-container {
+    position: fixed;
+    inset: 0;
+  }
+  
+  .ui {
+    position: fixed;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    z-index: 2147483647;
+    width: 360px;
+    max-width: 92vw;
+    color: var(--fg);
+    background: var(--bg);
+    border-radius: var(--r);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    container-type: inline-size;
+  }
+  
+  .ui .row {
+    display: flex;
+    gap: var(--g);
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  
+  .ui :where(.input, .btn, .tag) {
+    padding: 10px 12px;
+    border: 0;
+    border-radius: var(--r);
+    color: inherit;
+    outline: 0;
+    font: inherit;
+    background: var(--bg-s);
+  }
+  
+  .ui .input.tiny {
+    padding: 6px 8px;
+    min-width: 120px;
+    font-size: 12px;
+  }
+  
+  .ui .btn {
+    cursor: pointer;
+  }
+  .ui .btn:hover {
+    background: var(--bg-h);
+  }
+  .ui .btn[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .ui :where(.tag, .help) {
+    font-weight: 600;
+    font-size: 12px;
+  }
+  
+  .ui .help {
+    opacity: 0.9;
+  }
+  
+  @container (width < 420px) {
+    .ui {
+      width: auto;
+      max-width: none;
+      padding: 8px 10px;
+      border-radius: 0;
+      flex-direction: row;
+      align-items: center;
+    }
+  }
 </style>
