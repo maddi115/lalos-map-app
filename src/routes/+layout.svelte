@@ -1,9 +1,8 @@
 <svelte:head>
-  <title>HUD Map — 1-mile</title>
+  <title>Lalo's Map App</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css"/>
-  <link rel="icon" href="data:,">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl/dist/maplibre-gl.css"/>
 </svelte:head>
 
 <slot></slot>
@@ -14,7 +13,7 @@
     width: 100%;
     margin: 0;
     overflow: hidden;
-    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+    font-family: Inter, system-ui, sans-serif;
     background: #fff;
   }
 
