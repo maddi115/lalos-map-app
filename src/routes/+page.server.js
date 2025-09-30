@@ -1,30 +1,17 @@
 import { supabase } from '$lib/supabaseClient';
 
-export async function load({ cookies }) {
-  const deviceId = cookies.get('deviceId');
-  // ADD THIS LINE
-  console.log('Server received deviceId cookie:', deviceId);
-  if (!deviceId) {
-    return {
-      post: null
-    };
-  }
-
-  const { data: post, error } = await supabase
+export async function load() {
+  // This function now ONLY loads the public posts for the map.
+  const { data: posts, error } = await supabase
     .from('posts')
-    .select('id, lat, lng, image_url, comment, usercenter, natsize, pxatplace, deviceid')
-    .eq('deviceid', deviceId)
+    .select('id, lat, lng, image_url, comment, natsize, pxatplace')
     .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(50);
 
-  if (error) { 
-    console.error('Supabase query error:', error);
-    return { post: null }; // Return null on error
+  if (error) {
+    console.error('Error loading public posts:', error);
+    return { posts: [] };
   }
 
-  // No conversion needed, just send the raw post object
-  return {
-    post: post ?? null
-  };
+  return { posts: posts ?? [] };
 }

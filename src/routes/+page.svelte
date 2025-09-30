@@ -2,9 +2,7 @@
   import { onMount } from 'svelte';
   import { browser } from '$app/environment';
   import maplibregl from 'maplibre-gl';
-  import { supabase } from '$lib/supabaseClient.js';
 
-  // This 'data' prop is how SvelteKit passes data from your +page.js
   export let data;
 
   // --- CONFIG ---
@@ -12,7 +10,7 @@
     START: [-118.258683, 34.017235], ZREF: 16, MINPX: 8, MAXPX: 349, GOAL: 229 * 60 * 1000, SPEED: 1.35,
     RAD_M: 1609.344, D2R: Math.PI / 180, E111: 111320,
     MAX_CMT: 15, LS_ID: "lm_postId", LS_CMT: "lm_comment", LS_DEV: "lm_deviceId", LS_PX: "lm_pxSaved",
-    SAVE_DPX: 4, // Distance in pixels change needed to trigger a save
+    SAVE_DPX: 4,
   };
 
   // --- STATE ---
@@ -35,18 +33,13 @@
   let ghostCoords = null;
   let mapZoom = 11;
   let lastPxSaved = 0;
-  let timer; 
+  let timer;
   
-  // --- Marker States ---
   let domCmt = null;
   let youMarker = null;
 
-  // --- REACTIVE DERIVED STATE ---
   $: curPx = Math.round(C.MINPX + (C.MAXPX - C.MINPX) * (1 - Math.pow(1 - Math.min(1, Math.max(0, tAct / C.GOAL)), 3)));
 
-  // --- DEBOUNCED SAVE FUNCTIONS ---
-
-  // Debounced function for saving the comment to the database
   const saveComment = (() => {
       let timeout;
       return async () => {
@@ -54,7 +47,6 @@
           timeout = setTimeout(async () => {
               const trimmedComment = commentText.slice(0, C.MAX_CMT).trim();
               if (!savedId) return;
-
               try {
                   await fetch(`/api/items?id=${savedId}`, {
                       method: 'PATCH',
@@ -64,12 +56,10 @@
               } catch (e) {
                   console.error("Failed to save comment:", e);
               }
-          }, 400); // Debounce time
+          }, 400);
       };
   })();
 
-
-  // --- CORE LOGIC (Geo functions are unchanged) ---
   const Geo = {
     off: (lng, lat, dx, dy) => ({ lng: lng + dx / (C.E111 * Math.cos(lat * C.D2R) || 1e-9), lat: lat + dy / C.E111 }),
     quad: (lng, lat, w, h) => { const tl = Geo.off(lng, lat, -w/2, +h/2), tr = Geo.off(lng, lat, +w/2, +h/2), br = Geo.off(lng, lat, +w/2, -h/2), bl = Geo.off(lng, lat, -w/2, -h/2); return [[tl.lng, tl.lat], [tr.lng, tr.lat], [br.lng, br.lat], [bl.lng, bl.lat]] },
@@ -77,7 +67,6 @@
     inside: (lng, lat) => userCenter ? Geo.hav(lng, lat, userCenter.lng, userCenter.lat) <= C.RAD_M : false,
   };
 
-  // --- MARKER HELPERS ---
   function youPos() {
       if (!anchor) return null;
       lockM();
@@ -88,7 +77,6 @@
       if (!p || !map) return;
       if (domCmt) domCmt.remove();
       domCmt = null;
-
       if (!youMarker) {
           const el = document.createElement("div");
           el.textContent = "you";
@@ -103,40 +91,28 @@
       youMarker = null;
   }
   
-  // --- Restore state from server-side data ---
   function restoreState(post) {
     if (!post || !post.lng || !post.lat) {
       console.log('No post to restore.');
       return;
-      
     }
-
-    // Restore primary state variables
     savedId = post.id;
     anchor = { lng: post.lng, lat: post.lat };
     imgURL = post.image_url;
     commentText = post.comment || '';
-   // in the restoreState function...
-userCenter = post.usercenter || null;
-    // PostgreSQL snake_case -> camelCase for restoration
+    userCenter = post.usercenter || null;
     if (post.natsize) {
       natSize = post.natsize;
     }
-    
-    // Restore size and growth timer (tAct)
     const px = post.pxatplace || C.MINPX;
     const y = Math.max(0, (px - C.MINPX) / (C.MAXPX - C.MINPX));
     tAct = (1 - Math.cbrt(1 - y)) * C.GOAL;
     lastPxSaved = px;
-
-    // Restore UI state
     step = 3;
-    isCompact = true; // Assumes a restored state should start compact
-
+    isCompact = true;
     console.log('State restored for post ID:', savedId);
   }
 
-  // --- CORE LOGIC (fit and lockM are unchanged) ---
   function fit(px) {
     if (!natSize.w || !natSize.h) { baseSize = {w: px, h: px}; return; }
     const a = natSize.w / natSize.h;
@@ -154,10 +130,8 @@ userCenter = post.usercenter || null;
     geoSize = { w: baseSize.w * r.x * s, h: baseSize.h * r.y * s };
   }
 
-  // --- Add a utility function to save size periodically ---
   async function maybeSaveSize(px) {
     if (!savedId || !anchor || !imgURL) return;
-    
     if (Math.abs(px - (lastPxSaved || 0)) >= C.SAVE_DPX) {
       try {
         const response = await fetch(`/api/items?id=${savedId}`, {
@@ -165,7 +139,6 @@ userCenter = post.usercenter || null;
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pxAtPlace: Math.round(px) })
         });
-        
         if (!response.ok) {
             if (response.status === 404) {
                 console.warn("Post not found on server, stopping size updates.");
@@ -173,7 +146,6 @@ userCenter = post.usercenter || null;
             }
             throw new Error(`Failed to save size update. Status: ${response.status}`);
         }
-        
         lastPxSaved = Math.round(px);
       } catch(e) {
         console.error("Failed to save size", e);
@@ -181,26 +153,20 @@ userCenter = post.usercenter || null;
     }
   }
 
-  // --- CORE LOGIC: loadFile ---
   async function loadFile(e) {
     const file = e.target.files[0];
     if (!file || !anchor) return;
-
     isUploading = true;
     try {
       const formData = new FormData();
       formData.append('file', file);
-
       const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData
       });
-
       if (!response.ok) throw new Error('Upload failed');
-
       const { url } = await response.json();
       imgURL = url; 
-
       const im = new Image();
       im.onload = () => {
         natSize = { w: im.naturalWidth, h: im.naturalHeight };
@@ -217,11 +183,9 @@ userCenter = post.usercenter || null;
 
   function applyMedia() {
     if (!anchor || !map) return;
-    
     const source = map.getSource('s');
     lockM(); 
     const coords = Geo.quad(anchor.lng, anchor.lat, geoSize.w, geoSize.h);
-    
     if (!source) {
       map.addSource('s', { type: 'image', url: imgURL, coordinates: coords });
       map.addLayer({ id: 'l', type: 'raster', source: 's', paint: { 'raster-fade-duration': 0 } });
@@ -266,36 +230,41 @@ userCenter = post.usercenter || null;
           pxAtPlace: curPx
         })
       });
-
       if (!response.ok) throw new Error('Failed to save post');
-
       const newPost = await response.json();
       if (newPost.id) savedId = newPost.id;
-
     } catch (err) {
       console.error("Save failed", err);
       alert("Save failed. Please try again.");
     }
   }
 
-  // --- onMount LIFECYCLE ---
   onMount(() => {
-    deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
-    localStorage.setItem(C.LS_DEV, deviceId);
-    
-    if (browser) {
-        document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
+    async function initializeUser() {
+      deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
+      localStorage.setItem(C.LS_DEV, deviceId);
+      if (browser) {
+          document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
+      }
+      try {
+        const response = await fetch('/api/items/me');
+        if (!response.ok) throw new Error('Failed to fetch user post');
+        const { post } = await response.json();
+        if (post) {
+          restoreState(post);
+        }
+      } catch (e) {
+        console.error("Could not initialize user state:", e);
+      }
     }
-    
-    if (data.post) {
-      restoreState(data.post);
-    }
+
+    initializeUser();
     
     map = new maplibregl.Map({
       container: mapContainer,
+      center: anchor ? [anchor.lng, anchor.lat] : C.START,
+      zoom: anchor ? 14 : 11,
       style: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
-      center: data.post ? [data.post.lng, data.post.lat] : C.START,
-      zoom: data.post ? 14 : 11
     });
 
     map.doubleClickZoom.disable();
@@ -305,8 +274,7 @@ userCenter = post.usercenter || null;
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
     map.on('load', () => {
-      // Logic for restoring *your* image
-      if (data.post && imgURL) {
+      if (anchor && imgURL) {
         const im = new Image();
         im.onload = () => {
             natSize = { w: im.naturalWidth, h: im.naturalHeight }; 
@@ -314,29 +282,24 @@ userCenter = post.usercenter || null;
             map.easeTo({ center: [anchor.lng, anchor.lat], zoom: 14, duration: 400 }); 
         };
         im.onerror = () => {
-            console.error("Failed to load restored image from URL:", data.post.image_url);
+            console.error("Failed to load restored image from URL:", imgURL);
         };
-        im.src = data.post.image_url;
+        im.src = imgURL;
       }
 
-      // **UPDATED**: Logic for displaying *other users'* posts as images
       for (const post of data.posts || []) {
           if (savedId && post.id === savedId) continue;
-
           const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
           if (!post.image_url || !isLatLngValid) {
               console.warn(`Skipping post ID ${post.id}: Missing image_url or invalid coordinates.`);
               continue; 
           }
-
           const sourceId = `post-src-${post.id}`;
           const layerId = `post-layer-${post.id}`;
-          
           const otherNatSize = post.natsize || { w: 256, h: 256 };
           const otherCurPx = post.pxatplace || C.MINPX;
           const a = otherNatSize.w / otherNatSize.h;
           const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
-
           const c = { lng: post.lng, lat: post.lat };
           const p = map.project([c.lng, c.lat]);
           const x = map.unproject([p.x + 1, p.y]);
@@ -344,32 +307,20 @@ userCenter = post.usercenter || null;
           const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
           const s = Math.pow(2, map.getZoom() - C.ZREF);
           const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
-          
           const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
-
-          map.addSource(sourceId, {
-              type: 'image',
-              url: post.image_url,
-              coordinates: coordinates
-          });
-
+          map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
           map.addLayer({
               id: layerId,
               type: 'raster',
               source: sourceId,
               paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
           });
-
           if (post.comment) {
               const el = document.createElement("div");
               el.style.cssText = "font:700 11px/1.2 Inter;color:#111;background:rgba(255,255,255,.9);padding:3px 7px;border-radius:8px;border:1px solid rgba(0,0,0,.1);box-shadow:0 1px 4px rgba(0,0,0,.15);pointer-events:none;max-width:150px;text-align:center;";
               el.textContent = post.comment;
-              
               const latUp = post.lat + ((otherGeoSize.h / 2) + 5) / C.E111;
-              
-              new maplibregl.Marker({ element: el, anchor: "bottom" })
-                  .setLngLat([post.lng, latUp])
-                  .addTo(map);
+              new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([post.lng, latUp]).addTo(map);
           }
       }
     });
@@ -387,37 +338,27 @@ userCenter = post.usercenter || null;
     };
   });
   
-  // --- REACTIVE EFFECTS ---
-  
-  // **UPDATED**: Comment/You Marker Logic
   $: if (browser && map && anchor) {
     const t = (commentText || "").slice(0, C.MAX_CMT).trim();
-
     if (!t) {
         if (domCmt) domCmt.remove();
         domCmt = null;
         if (!youMarker) showYou();
     } else {
         hideYou();
-
         const { lng, lat } = anchor;
-        
         fit(curPx);
         lockM();
         const latUp = lat + ((geoSize.h / 2) + 6) / C.E111;
-
         if (!domCmt) {
             const el = document.createElement("div");
             el.style.cssText = "font:700 12px/1.25 Inter;color:#111;background:rgba(255,255,255,.98);padding:4px 8px;border-radius:10px;border:1px solid rgba(0,0,0,.12);box-shadow:0 2px 8px rgba(0,0,0,.25);pointer-events:none;";
             el.textContent = t;
-            domCmt = new maplibregl.Marker({ element: el, anchor: "bottom" })
-                .setLngLat([lng, latUp])
-                .addTo(map);
+            domCmt = new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([lng, latUp]).addTo(map);
         } else {
             domCmt.setLngLat([lng, latUp]);
             domCmt.getElement().textContent = t;
         }
-        
         saveComment(); 
     }
   }
@@ -446,14 +387,12 @@ userCenter = post.usercenter || null;
     }
   }
   
-  // Rerender ghost box for placement step
   $: if (browser && map && step === 2) {
     if (ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat)) {
       fit(curPx);
       lockM();
       const coords = Geo.quad(ghostCoords.lng, ghostCoords.lat, geoSize.w, geoSize.h);
       const poly = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } };
-
       const source = map.getSource('gb');
       if (!source) {
           map.addSource('gb', { type: 'geojson', data: poly });
@@ -481,11 +420,9 @@ userCenter = post.usercenter || null;
       map.getCanvas().style.cursor = '';
   }
 
-  // Update localStorage for comment
   $: if (browser) {
     localStorage.setItem(C.LS_CMT, commentText);
   }
-  
 </script>
 
 <div class="map-container" bind:this={mapContainer}></div>
