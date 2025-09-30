@@ -2,19 +2,20 @@
   import { onMount } from 'svelte';
   import { browser } from '$app/environment';
   import maplibregl from 'maplibre-gl';
-  import { supabase } from '$lib/supabaseClient'; // <-- CHANGE: Import Supabase client
+  import { supabase } from '$lib/supabaseClient.js';
 
   // This 'data' prop is how SvelteKit passes data from your +page.js
   export let data;
 
-  // --- CONFIG (Removed old API URL) ---
+  // --- CONFIG ---
   const C = {
     START: [-118.258683, 34.017235], ZREF: 16, MINPX: 8, MAXPX: 349, GOAL: 229 * 60 * 1000, SPEED: 1.35,
     RAD_M: 1609.344, D2R: Math.PI / 180, E111: 111320,
-    MAX_CMT: 15, LS_ID: "lm_postId", LS_CMT: "lm_comment", LS_DEV: "lm_deviceId", LS_PX: "lm_pxSaved"
+    MAX_CMT: 15, LS_ID: "lm_postId", LS_CMT: "lm_comment", LS_DEV: "lm_deviceId", LS_PX: "lm_pxSaved",
+    SAVE_DPX: 4, // Distance in pixels change needed to trigger a save
   };
 
-  // --- STATE (Mostly unchanged) ---
+  // --- STATE ---
   let map;
   let mapContainer;
   let step = 1;
@@ -33,9 +34,40 @@
   let isUploading = false;
   let ghostCoords = null;
   let mapZoom = 11;
+  let lastPxSaved = 0;
+  let timer; // Declare timer at the top level
+  
+  // --- NEW: Marker States ---
+  let domCmt = null;
+  let youMarker = null;
 
-  // --- REACTIVE DERIVED STATE (Unchanged) ---
+  // --- REACTIVE DERIVED STATE ---
   $: curPx = Math.round(C.MINPX + (C.MAXPX - C.MINPX) * (1 - Math.pow(1 - Math.min(1, Math.max(0, tAct / C.GOAL)), 3)));
+
+  // --- DEBOUNCED SAVE FUNCTIONS ---
+
+  // Debounced function for saving the comment to the database
+  const saveComment = (() => {
+      let timeout;
+      return async () => {
+          if (timeout) clearTimeout(timeout);
+          timeout = setTimeout(async () => {
+              const trimmedComment = commentText.slice(0, C.MAX_CMT).trim();
+              if (!savedId) return;
+
+              try {
+                  await fetch(`/api/items?id=${savedId}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ comment: trimmedComment || null })
+                  });
+              } catch (e) {
+                  console.error("Failed to save comment:", e);
+              }
+          }, 400); // Debounce time
+      };
+  })();
+
 
   // --- CORE LOGIC (Geo functions are unchanged) ---
   const Geo = {
@@ -44,7 +76,65 @@
     hav: (a, b, c, d) => { const R = 6371000, p1 = b * C.D2R, p2 = d * C.D2R, dp = (d - b) * C.D2R, dl = (c - a) * C.D2R, x = Math.sin(dp/2)**2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2)**2; return 2 * R * Math.asin(Math.sqrt(x)) },
     inside: (lng, lat) => userCenter ? Geo.hav(lng, lat, userCenter.lng, userCenter.lat) <= C.RAD_M : false,
   };
+
+  // --- MARKER HELPERS ---
+  function youPos() {
+      if (!anchor) return null;
+      lockM();
+      return [anchor.lng, anchor.lat + ((geoSize.h / 2) + 10) / C.E111];
+  }
+  function showYou() {
+      const p = youPos();
+      if (!p || !map) return;
+      if (domCmt) domCmt.remove();
+      domCmt = null;
+
+      if (!youMarker) {
+          const el = document.createElement("div");
+          el.textContent = "you";
+          el.style.cssText = "font:600 11px/1 Inter,system-ui;color:#111;background:#fff;padding:2px 6px;border-radius:999px;border:1px solid #ddd;box-shadow:0 1px 2px rgba(0,0,0,.06);pointer-events:none;";
+          youMarker = new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat(p).addTo(map);
+      } else {
+          youMarker.setLngLat(p);
+      }
+  }
+  function hideYou() {
+      if (youMarker) youMarker.remove();
+      youMarker = null;
+  }
   
+  // --- NEW: Restore state from server-side data ---
+  function restoreState(post) {
+    if (!post || !post.lng || !post.lat) {
+      console.log('No post to restore.');
+      return;
+    }
+
+    // Restore primary state variables
+    savedId = post.id;
+    anchor = { lng: post.lng, lat: post.lat };
+    imgURL = post.image_url;
+    commentText = post.comment || '';
+    userCenter = post.userCenter || null;
+    
+    // PostgreSQL snake_case -> camelCase for restoration
+    if (post.natsize) {
+      natSize = post.natsize;
+    }
+    
+    // Restore size and growth timer (tAct)
+    const px = post.pxatplace || C.MINPX;
+    const y = Math.max(0, (px - C.MINPX) / (C.MAXPX - C.MINPX));
+    tAct = (1 - Math.cbrt(1 - y)) * C.GOAL;
+    lastPxSaved = px;
+
+    // Restore UI state
+    step = 3;
+    isCompact = true; // Assumes a restored state should start compact
+
+    console.log('State restored for post ID:', savedId);
+  }
+
   // --- CORE LOGIC (fit and lockM are unchanged) ---
   function fit(px) {
     if (!natSize.w || !natSize.h) { baseSize = {w: px, h: px}; return; }
@@ -61,6 +151,35 @@
     const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R) || 1e-9)), y: Math.abs((y.lat - c.lat) * C.E111) };
     const s = Math.pow(2, map.getZoom() - C.ZREF);
     geoSize = { w: baseSize.w * r.x * s, h: baseSize.h * r.y * s };
+  }
+
+  // --- NEW: Add a utility function to save size periodically (Uses new ?id= query param) ---
+  async function maybeSaveSize(px) {
+    if (!savedId || !anchor || !imgURL) return;
+    
+    // Only save if the size has changed more than C.SAVE_DPX (4px)
+    if (Math.abs(px - (lastPxSaved || 0)) >= C.SAVE_DPX) {
+      try {
+        // FIX: Use simple query parameter for ID to avoid file system issues
+        const response = await fetch(`/api/items?id=${savedId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pxAtPlace: Math.round(px) })
+        });
+        
+        if (!response.ok) {
+            if (response.status === 404) {
+                console.warn("Post not found on server, stopping size updates.");
+                clearInterval(timer); // Stop the interval from running
+            }
+            throw new Error(`Failed to save size update. Status: ${response.status}`);
+        }
+        
+        lastPxSaved = Math.round(px);
+      } catch(e) {
+        console.error("Failed to save size", e);
+      }
+    }
   }
 
   // --- UPDATED CORE LOGIC: loadFile now handles image upload to /api/upload ---
@@ -99,14 +218,23 @@
 
   function applyMedia() {
     if (!anchor) return;
+    // Check if map is initialized before proceeding
+    if (!map) {
+      console.warn("Map not initialized when applyMedia was called.");
+      return;
+    }
+    
     const source = map.getSource('s');
+    // lockM ensures geoSize is correct based on anchor/current zoom/size
+    lockM(); 
     const coords = Geo.quad(anchor.lng, anchor.lat, geoSize.w, geoSize.h);
     
     if (!source) {
       map.addSource('s', { type: 'image', url: imgURL, coordinates: coords });
-      map.addLayer({ id: 'l', type: 'raster', source: 's' });
+      map.addLayer({ id: 'l', type: 'raster', source: 's', paint: { 'raster-fade-duration': 0 } });
     } else {
-      source.updateImage({ url: imgURL, coordinates: coords });
+      // Use the coordinates array to update the source
+      source.setCoordinates(coords); 
     }
     mediaReady = true;
   }
@@ -133,14 +261,19 @@
   async function saveAndCompact() {
     isCompact = true;
     try {
-      const response = await fetch('/api/posts', {
+      const response = await fetch('/api/items', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           comment: commentText || null,
           lat: anchor.lat,
           lng: anchor.lng,
-          image_url: imgURL // Send the new image URL
+          image_url: imgURL,
+          // --- RESTORATION DATA ---
+          userCenter: userCenter,
+          natSize: natSize,
+          pxAtPlace: curPx
+          // --------------------------
         })
       });
 
@@ -149,9 +282,21 @@
       const newPost = await response.json();
       if (newPost.id) savedId = newPost.id;
 
+      // Update the marker creation to use setHTML (as discussed previously)
+      const popupHTML = `
+        <div style="padding: 0; max-width: 250px;">
+          <img 
+            src="${newPost.image_url}" 
+            alt="${newPost.comment || 'Uploaded image'}" 
+            style="width: 100%; height: auto; border-radius: 8px; margin-bottom: 8px;"
+          />
+          <p style="margin: 0; font-size: 0.9rem;">${newPost.comment || 'No comment'}</p>
+        </div>
+      `;
+
       new maplibregl.Marker()
         .setLngLat([newPost.lng, newPost.lat])
-        .setPopup(new maplibregl.Popup().setText(newPost.comment))
+        .setPopup(new maplibregl.Popup().setHTML(popupHTML)) // Use setHTML here
         .addTo(map);
 
     } catch (err) {
@@ -164,13 +309,23 @@
   onMount(() => {
     deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
     localStorage.setItem(C.LS_DEV, deviceId);
-    commentText = localStorage.getItem(C.LS_CMT) || "";
-
+    
+    // *** FIX: Set deviceId as a cookie so the server can read it for POST/LOAD ***
+    if (browser) {
+        document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
+    }
+    // -------------------------------------------------------------------------
+    
+    // After deviceId is set, restore any server-side state
+    if (data.post) {
+      restoreState(data.post);
+    }
+    
     map = new maplibregl.Map({
       container: mapContainer,
       style: "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
-      center: C.START,
-      zoom: 11
+      center: data.post ? [data.post.lng, data.post.lat] : C.START,
+      zoom: data.post ? 14 : 11
     });
 
     map.doubleClickZoom.disable();
@@ -179,20 +334,35 @@
     map.on('mouseout', () => { ghostCoords = null; });
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
-    // Add markers for posts loaded from the database
+    // Apply media logic on load
     map.on('load', () => {
-      for (const post of data.posts) {
-        
-        // **CRITICAL FIX:** Validate lat/lng before creating marker
-        const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
+      // Logic for restoring *your* image
+      if (data.post && imgURL) {
+        const im = new Image();
+        im.onload = () => {
+            // NatSize must be set before applyMedia() is called inside onMount
+            natSize = { w: im.naturalWidth, h: im.naturalHeight }; 
+            applyMedia(); 
+            // Fly to the restored post location
+            map.easeTo({ center: [anchor.lng, anchor.lat], zoom: 14, duration: 400 }); 
+        };
+        im.onerror = () => {
+            console.error("Failed to load restored image from URL:", data.post.image_url);
+        };
+        im.src = data.post.image_url;
+      }
 
+      // Logic for displaying *other users'* posts
+      for (const post of data.posts || []) {
+        if (savedId && post.id === savedId) continue;
+        
+        const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
         if (!isLatLngValid) {
           console.warn(`Skipping post ID ${post.id}: Invalid coordinates (lat: ${post.lat}, lng: ${post.lng})`);
           continue; 
         }
 
         let popupHTML = `<p style="margin: 0; font-weight: 600;">${post.comment || 'No comment'}</p>`;
-
         if (post.image_url) {
           popupHTML = `
             <div style="padding: 0; max-width: 250px;">
@@ -208,13 +378,17 @@
 
         new maplibregl.Marker()
           .setLngLat([post.lng, post.lat])
-          .setPopup(new maplibregl.Popup().setHTML(popupHTML)) // Use setHTML here
+          .setPopup(new maplibregl.Popup().setHTML(popupHTML))
           .addTo(map);
       }
     });
 
-    const timer = setInterval(() => {
-        if (tAct < C.GOAL) { tAct += 1000 * C.SPEED; }
+    timer = setInterval(() => {
+        if (tAct < C.GOAL) { 
+            tAct += 1000 * C.SPEED; 
+            // FIX: We now call maybeSaveSize inside the timer to avoid global variable dependency issues
+            if (savedId) maybeSaveSize(curPx); 
+        }
     }, 1000);
     
     return () => {
@@ -223,66 +397,114 @@
     };
   });
   
-  // --- REACTIVE EFFECTS (Unchanged) ---
-  $: if (browser && map && userCenter) {
-    const r = C.RAD_M;
-    const circle = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [Array.from({length: 97}, (_, i) => { const a = i/96*2*Math.PI; const p = Geo.off(userCenter.lng, userCenter.lat, Math.cos(a)*r, Math.sin(a)*r); return [p.lng, p.lat]})]}};
-    const source = map.getSource('rad');
-    if (!source) {
-      map.addSource('rad', { type: 'geojson', data: circle });
-      map.addLayer({ id: 'radf', type: 'fill', source: 'rad', paint: { "fill-color": "#2b2b2b", "fill-opacity": 0.05 } });
-      map.addLayer({ id: 'radl', type: 'line', source: 'rad', paint: { "line-color": "#2b2b2b", "line-width": 2, "line-opacity": 0.1 }});
-    } else {
-      source.setData(circle);
-    }
-  }
+  // --- REACTIVE EFFECTS ---
   
-  $: if (anchor) {
-    fit(curPx);
-    lockM();
-    if (mediaReady) {
-      const source = map.getSource('s');
-      if (source) source.setCoordinates(Geo.quad(anchor.lng, anchor.lat, geoSize.w, geoSize.h));
-    }
-  }
-  
-  $: if (browser) {
-    localStorage.setItem(C.LS_CMT, commentText);
-  }
-  
-  $: if (mapZoom) {
-    fit(curPx);
-    lockM();
-  }
+  // NEW: Comment/You Marker Logic (runs whenever commentText or anchor changes)
+  $: if (browser && map && anchor) {
+    const t = (commentText || "").slice(0, C.MAX_CMT).trim();
 
-  $: if (browser && map && step === 2 && ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat)) {
-    const coords = Geo.quad(ghostCoords.lng, ghostCoords.lat, geoSize.w, geoSize.h);
-    const poly = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } };
-
-    const source = map.getSource('gb');
-    if (!source) {
-        map.addSource('gb', { type: 'geojson', data: poly });
-        map.addLayer({ id: 'gbf', type: 'fill', source: 'gb', paint: { 'fill-color': '#1e90ff', 'fill-opacity': 0.08 } });
-        map.addLayer({ id: 'gbl', type: 'line', source: 'gb', paint: { 'line-color': '#1e90ff', 'line-width': 2 } });
+    if (!t) {
+        if (domCmt) domCmt.remove();
+        domCmt = null;
+        if (!youMarker) showYou();
     } else {
-        source.setData(poly);
+        hideYou();
+
+        const { lng, lat } = anchor;
+        
+        // Calculate dynamic size and position for the comment marker
+        fit(curPx);
+        lockM();
+        const latUp = lat + ((geoSize.h / 2) + 6) / C.E111; // 6 meters offset above image
+        
+        if (!domCmt) {
+            const el = document.createElement("div");
+            el.style.cssText = "font:700 12px/1.25 Inter;color:#111;background:rgba(255,255,255,.98);padding:4px 8px;border-radius:10px;border:1px solid rgba(0,0,0,.12);box-shadow:0 2px 8px rgba(0,0,0,.25);pointer-events:none;";
+            el.textContent = t;
+            domCmt = new maplibregl.Marker({ element: el, anchor: "bottom" })
+                .setLngLat([lng, latUp])
+                .addTo(map);
+        } else {
+            domCmt.setLngLat([lng, latUp]);
+            domCmt.getElement().textContent = t;
+            
+            // Adjust font size based on image size (like the old code)
+            const p = map.project([lng, lat]), x = map.unproject([p.x + 1, p.y]), y = map.unproject([p.x, p.y + 1]);
+            const r = { x: Math.abs((x.lng - lng) * (C.E111 * Math.cos(lat * C.D2R) || 1e-9)), y: Math.abs((y.lat - lat) * C.E111) };
+            const s = Math.pow(2, map.getZoom() - C.ZREF);
+            const h = baseSize.h * r.y * s;
+            domCmt.getElement().style.fontSize = `${Math.max(13, Math.min(64, h * 0.12)).toFixed(2)}px`
+        }
+        
+        // Save the comment to the database immediately
+        saveComment(); 
     }
-  } else if (browser && map) {
+}
+  
+  $: if (browser && map) {
+    if (userCenter) {
+      const r = C.RAD_M;
+      const circle = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [Array.from({length: 97}, (_, i) => { const a = i/96*2*Math.PI; const p = Geo.off(userCenter.lng, userCenter.lat, Math.cos(a)*r, Math.sin(a)*r); return [p.lng, p.lat]})]}};
+      const source = map.getSource('rad');
+      if (!source) {
+        map.addSource('rad', { type: 'geojson', data: circle });
+        map.addLayer({ id: 'radf', type: 'fill', source: 'rad', paint: { "fill-color": "#2b2b2b", "fill-opacity": 0.05 } });
+        map.addLayer({ id: 'radl', type: 'line', source: 'rad', paint: { "line-color": "#2b2b2b", "line-width": 2, "line-opacity": 0.1 }});
+      } else {
+        source.setData(circle);
+      }
+    }
+    
+    if (anchor) {
+      fit(curPx);
+      lockM();
+      if (mediaReady) {
+        const source = map.getSource('s');
+        if (source) source.setCoordinates(Geo.quad(anchor.lng, anchor.lat, geoSize.w, geoSize.h));
+      }
+    }
+  }
+  
+  // Rerender ghost box for placement step
+  $: if (browser && map && step === 2) {
+    if (ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat)) {
+      fit(curPx);
+      lockM();
+      const coords = Geo.quad(ghostCoords.lng, ghostCoords.lat, geoSize.w, geoSize.h);
+      const poly = { type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } };
+
+      const source = map.getSource('gb');
+      if (!source) {
+          map.addSource('gb', { type: 'geojson', data: poly });
+          map.addLayer({ id: 'gbf', type: 'fill', source: 'gb', paint: { 'fill-color': '#1e90ff', 'fill-opacity': 0.08 } });
+          map.addLayer({ id: 'gbl', type: 'line', source: 'gb', paint: { 'line-color': '#1e90ff', 'line-width': 2 } });
+      } else {
+          source.setData(poly);
+      }
+    } else {
+        const source = map.getSource('gb');
+        if (source) {
+            if (map.getLayer('gbl')) map.removeLayer('gbl');
+            if (map.getLayer('gbf')) map.removeLayer('gbf');
+            if (map.getSource('gb')) map.removeSource('gb');
+        }
+    }
+    map.getCanvas().style.cursor = ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat) ? 'crosshair' : 'none';
+  } else if (browser && map && step !== 2) {
       const source = map.getSource('gb');
       if (source) {
           if (map.getLayer('gbl')) map.removeLayer('gbl');
           if (map.getLayer('gbf')) map.removeLayer('gbf');
           if (map.getSource('gb')) map.removeSource('gb');
       }
+      map.getCanvas().style.cursor = '';
   }
 
-  $: if (browser && map) {
-    if (step === 2) {
-      map.getCanvas().style.cursor = 'none';
-    } else {
-      map.getCanvas().style.cursor = '';
-    }
+  // Update localStorage for comment
+  $: if (browser) {
+    localStorage.setItem(C.LS_CMT, commentText);
   }
+  
 </script>
 
 <div class="map-container" bind:this={mapContainer}></div>
