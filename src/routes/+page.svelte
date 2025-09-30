@@ -35,9 +35,9 @@
   let ghostCoords = null;
   let mapZoom = 11;
   let lastPxSaved = 0;
-  let timer; // Declare timer at the top level
+  let timer; 
   
-  // --- NEW: Marker States ---
+  // --- Marker States ---
   let domCmt = null;
   let youMarker = null;
 
@@ -103,11 +103,12 @@
       youMarker = null;
   }
   
-  // --- NEW: Restore state from server-side data ---
+  // --- Restore state from server-side data ---
   function restoreState(post) {
     if (!post || !post.lng || !post.lat) {
       console.log('No post to restore.');
       return;
+      
     }
 
     // Restore primary state variables
@@ -115,8 +116,8 @@
     anchor = { lng: post.lng, lat: post.lat };
     imgURL = post.image_url;
     commentText = post.comment || '';
-    userCenter = post.userCenter || null;
-    
+   // in the restoreState function...
+userCenter = post.usercenter || null;
     // PostgreSQL snake_case -> camelCase for restoration
     if (post.natsize) {
       natSize = post.natsize;
@@ -153,14 +154,12 @@
     geoSize = { w: baseSize.w * r.x * s, h: baseSize.h * r.y * s };
   }
 
-  // --- NEW: Add a utility function to save size periodically (Uses new ?id= query param) ---
+  // --- Add a utility function to save size periodically ---
   async function maybeSaveSize(px) {
     if (!savedId || !anchor || !imgURL) return;
     
-    // Only save if the size has changed more than C.SAVE_DPX (4px)
     if (Math.abs(px - (lastPxSaved || 0)) >= C.SAVE_DPX) {
       try {
-        // FIX: Use simple query parameter for ID to avoid file system issues
         const response = await fetch(`/api/items?id=${savedId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -170,7 +169,7 @@
         if (!response.ok) {
             if (response.status === 404) {
                 console.warn("Post not found on server, stopping size updates.");
-                clearInterval(timer); // Stop the interval from running
+                clearInterval(timer); 
             }
             throw new Error(`Failed to save size update. Status: ${response.status}`);
         }
@@ -182,7 +181,7 @@
     }
   }
 
-  // --- UPDATED CORE LOGIC: loadFile now handles image upload to /api/upload ---
+  // --- CORE LOGIC: loadFile ---
   async function loadFile(e) {
     const file = e.target.files[0];
     if (!file || !anchor) return;
@@ -217,15 +216,9 @@
   }
 
   function applyMedia() {
-    if (!anchor) return;
-    // Check if map is initialized before proceeding
-    if (!map) {
-      console.warn("Map not initialized when applyMedia was called.");
-      return;
-    }
+    if (!anchor || !map) return;
     
     const source = map.getSource('s');
-    // lockM ensures geoSize is correct based on anchor/current zoom/size
     lockM(); 
     const coords = Geo.quad(anchor.lng, anchor.lat, geoSize.w, geoSize.h);
     
@@ -233,7 +226,6 @@
       map.addSource('s', { type: 'image', url: imgURL, coordinates: coords });
       map.addLayer({ id: 'l', type: 'raster', source: 's', paint: { 'raster-fade-duration': 0 } });
     } else {
-      // Use the coordinates array to update the source
       source.setCoordinates(coords); 
     }
     mediaReady = true;
@@ -269,11 +261,9 @@
           lat: anchor.lat,
           lng: anchor.lng,
           image_url: imgURL,
-          // --- RESTORATION DATA ---
           userCenter: userCenter,
           natSize: natSize,
           pxAtPlace: curPx
-          // --------------------------
         })
       });
 
@@ -282,41 +272,21 @@
       const newPost = await response.json();
       if (newPost.id) savedId = newPost.id;
 
-      // Update the marker creation to use setHTML (as discussed previously)
-      const popupHTML = `
-        <div style="padding: 0; max-width: 250px;">
-          <img 
-            src="${newPost.image_url}" 
-            alt="${newPost.comment || 'Uploaded image'}" 
-            style="width: 100%; height: auto; border-radius: 8px; margin-bottom: 8px;"
-          />
-          <p style="margin: 0; font-size: 0.9rem;">${newPost.comment || 'No comment'}</p>
-        </div>
-      `;
-
-      new maplibregl.Marker()
-        .setLngLat([newPost.lng, newPost.lat])
-        .setPopup(new maplibregl.Popup().setHTML(popupHTML)) // Use setHTML here
-        .addTo(map);
-
     } catch (err) {
       console.error("Save failed", err);
       alert("Save failed. Please try again.");
     }
   }
 
-  // --- UPDATED: Added validation to prevent map crash ---
+  // --- onMount LIFECYCLE ---
   onMount(() => {
     deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
     localStorage.setItem(C.LS_DEV, deviceId);
     
-    // *** FIX: Set deviceId as a cookie so the server can read it for POST/LOAD ***
     if (browser) {
         document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
     }
-    // -------------------------------------------------------------------------
     
-    // After deviceId is set, restore any server-side state
     if (data.post) {
       restoreState(data.post);
     }
@@ -334,16 +304,13 @@
     map.on('mouseout', () => { ghostCoords = null; });
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
-    // Apply media logic on load
     map.on('load', () => {
       // Logic for restoring *your* image
       if (data.post && imgURL) {
         const im = new Image();
         im.onload = () => {
-            // NatSize must be set before applyMedia() is called inside onMount
             natSize = { w: im.naturalWidth, h: im.naturalHeight }; 
             applyMedia(); 
-            // Fly to the restored post location
             map.easeTo({ center: [anchor.lng, anchor.lat], zoom: 14, duration: 400 }); 
         };
         im.onerror = () => {
@@ -352,41 +319,64 @@
         im.src = data.post.image_url;
       }
 
-      // Logic for displaying *other users'* posts
+      // **UPDATED**: Logic for displaying *other users'* posts as images
       for (const post of data.posts || []) {
-        if (savedId && post.id === savedId) continue;
-        
-        const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
-        if (!isLatLngValid) {
-          console.warn(`Skipping post ID ${post.id}: Invalid coordinates (lat: ${post.lat}, lng: ${post.lng})`);
-          continue; 
-        }
+          if (savedId && post.id === savedId) continue;
 
-        let popupHTML = `<p style="margin: 0; font-weight: 600;">${post.comment || 'No comment'}</p>`;
-        if (post.image_url) {
-          popupHTML = `
-            <div style="padding: 0; max-width: 250px;">
-              <img 
-                src="${post.image_url}" 
-                alt="${post.comment || 'Uploaded image'}" 
-                style="width: 100%; height: auto; border-radius: 8px; margin-bottom: 8px;"
-              />
-              <p style="margin: 0; font-size: 0.9rem;">${post.comment || 'No comment'}</p>
-            </div>
-          `;
-        }
+          const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
+          if (!post.image_url || !isLatLngValid) {
+              console.warn(`Skipping post ID ${post.id}: Missing image_url or invalid coordinates.`);
+              continue; 
+          }
 
-        new maplibregl.Marker()
-          .setLngLat([post.lng, post.lat])
-          .setPopup(new maplibregl.Popup().setHTML(popupHTML))
-          .addTo(map);
+          const sourceId = `post-src-${post.id}`;
+          const layerId = `post-layer-${post.id}`;
+          
+          const otherNatSize = post.natsize || { w: 256, h: 256 };
+          const otherCurPx = post.pxatplace || C.MINPX;
+          const a = otherNatSize.w / otherNatSize.h;
+          const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
+
+          const c = { lng: post.lng, lat: post.lat };
+          const p = map.project([c.lng, c.lat]);
+          const x = map.unproject([p.x + 1, p.y]);
+          const y = map.unproject([p.x, p.y + 1]);
+          const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
+          const s = Math.pow(2, map.getZoom() - C.ZREF);
+          const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
+          
+          const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
+
+          map.addSource(sourceId, {
+              type: 'image',
+              url: post.image_url,
+              coordinates: coordinates
+          });
+
+          map.addLayer({
+              id: layerId,
+              type: 'raster',
+              source: sourceId,
+              paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
+          });
+
+          if (post.comment) {
+              const el = document.createElement("div");
+              el.style.cssText = "font:700 11px/1.2 Inter;color:#111;background:rgba(255,255,255,.9);padding:3px 7px;border-radius:8px;border:1px solid rgba(0,0,0,.1);box-shadow:0 1px 4px rgba(0,0,0,.15);pointer-events:none;max-width:150px;text-align:center;";
+              el.textContent = post.comment;
+              
+              const latUp = post.lat + ((otherGeoSize.h / 2) + 5) / C.E111;
+              
+              new maplibregl.Marker({ element: el, anchor: "bottom" })
+                  .setLngLat([post.lng, latUp])
+                  .addTo(map);
+          }
       }
     });
 
     timer = setInterval(() => {
         if (tAct < C.GOAL) { 
             tAct += 1000 * C.SPEED; 
-            // FIX: We now call maybeSaveSize inside the timer to avoid global variable dependency issues
             if (savedId) maybeSaveSize(curPx); 
         }
     }, 1000);
@@ -399,7 +389,7 @@
   
   // --- REACTIVE EFFECTS ---
   
-  // NEW: Comment/You Marker Logic (runs whenever commentText or anchor changes)
+  // **UPDATED**: Comment/You Marker Logic
   $: if (browser && map && anchor) {
     const t = (commentText || "").slice(0, C.MAX_CMT).trim();
 
@@ -412,11 +402,10 @@
 
         const { lng, lat } = anchor;
         
-        // Calculate dynamic size and position for the comment marker
         fit(curPx);
         lockM();
-        const latUp = lat + ((geoSize.h / 2) + 6) / C.E111; // 6 meters offset above image
-        
+        const latUp = lat + ((geoSize.h / 2) + 6) / C.E111;
+
         if (!domCmt) {
             const el = document.createElement("div");
             el.style.cssText = "font:700 12px/1.25 Inter;color:#111;background:rgba(255,255,255,.98);padding:4px 8px;border-radius:10px;border:1px solid rgba(0,0,0,.12);box-shadow:0 2px 8px rgba(0,0,0,.25);pointer-events:none;";
@@ -427,19 +416,11 @@
         } else {
             domCmt.setLngLat([lng, latUp]);
             domCmt.getElement().textContent = t;
-            
-            // Adjust font size based on image size (like the old code)
-            const p = map.project([lng, lat]), x = map.unproject([p.x + 1, p.y]), y = map.unproject([p.x, p.y + 1]);
-            const r = { x: Math.abs((x.lng - lng) * (C.E111 * Math.cos(lat * C.D2R) || 1e-9)), y: Math.abs((y.lat - lat) * C.E111) };
-            const s = Math.pow(2, map.getZoom() - C.ZREF);
-            const h = baseSize.h * r.y * s;
-            domCmt.getElement().style.fontSize = `${Math.max(13, Math.min(64, h * 0.12)).toFixed(2)}px`
         }
         
-        // Save the comment to the database immediately
         saveComment(); 
     }
-}
+  }
   
   $: if (browser && map) {
     if (userCenter) {
