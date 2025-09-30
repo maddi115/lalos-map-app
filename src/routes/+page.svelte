@@ -38,6 +38,9 @@
   let domCmt = null;
   let youMarker = null;
 
+  // --- NEW: Mobile Detection State ---
+  let isMobile = false;
+
   $: curPx = Math.round(C.MINPX + (C.MAXPX - C.MINPX) * (1 - Math.pow(1 - Math.min(1, Math.max(0, tAct / C.GOAL)), 3)));
 
   const saveComment = (() => {
@@ -204,7 +207,8 @@
   }
   
   function placeOnClick(e) {
-    if (step !== 2) return;
+    // --- UPDATED: Disable click-to-place on mobile ---
+    if (step !== 2 || isMobile) return;
     const { lng, lat } = e.lngLat;
     if (Geo.inside(lng, lat)) {
       anchor = { lng, lat };
@@ -214,6 +218,18 @@
     }
   }
   
+  // --- NEW: Function for mobile "Place Here" button ---
+  function placeAtCenter() {
+    if (step !== 2) return;
+    const { lng, lat } = map.getCenter();
+    if (Geo.inside(lng, lat)) {
+        anchor = { lng, lat };
+        step = 3;
+    } else {
+        alert('Please place inside the 1-mile radius.');
+    }
+  }
+
   async function saveAndCompact() {
     isCompact = true;
     try {
@@ -240,50 +256,41 @@
   }
 
   function isNewDay() {
-    const RESET_HOUR = 3; // 3 AM
+    const RESET_HOUR = 3;
     const now = new Date().getTime();
     const lastReset = parseInt(localStorage.getItem('lm_lastReset') || '0');
-
-    // Get the timestamp for 3 AM today
     const todaysReset = new Date();
     todaysReset.setHours(RESET_HOUR, 0, 0, 0);
     const todaysResetTime = todaysReset.getTime();
-
-    // Check if the current time is past 3 AM AND the last reset was before 3 AM today
     if (now > todaysResetTime && lastReset < todaysResetTime) {
         console.log("Daily reset triggered.");
         localStorage.setItem('lm_lastReset', now.toString());
         return true;
     }
-
     return false;
   }
 
   onMount(() => {
-    // Check if it's a new day FIRST
+    // --- NEW: Detect mobile device on mount ---
+    if (browser) {
+      isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
+    }
+
     const startFresh = isNewDay();
 
     async function initializeUser() {
-      // 1. Set the deviceId and cookie
       deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
       localStorage.setItem(C.LS_DEV, deviceId);
       if (browser) {
           document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
       }
-
-      // If it's a new day, DON'T fetch the old post
       if (startFresh) {
           return;
       }
-
-      // 2. Fetch the user's OWN post from the new API endpoint
       try {
         const response = await fetch('/api/items/me');
         if (!response.ok) throw new Error('Failed to fetch user post');
-        
         const { post } = await response.json();
-
-        // 3. If a post is found, restore the state
         if (post) {
           restoreState(post);
         }
@@ -294,7 +301,6 @@
 
     initializeUser();
     
-    // The rest of the onMount logic is for setting up the map
     map = new maplibregl.Map({
       container: mapContainer,
       center: anchor ? [anchor.lng, anchor.lat] : C.START,
@@ -304,12 +310,11 @@
 
     map.doubleClickZoom.disable();
     map.on('click', placeOnClick);
-    map.on('mousemove', (e) => { if (step === 2) { ghostCoords = e.lngLat; } });
+    map.on('mousemove', (e) => { if (step === 2 && !isMobile) { ghostCoords = e.lngLat; } });
     map.on('mouseout', () => { ghostCoords = null; });
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
     map.on('load', () => {
-      // Logic for restoring *your* image
       if (anchor && imgURL) {
         const im = new Image();
         im.onload = () => {
@@ -323,7 +328,6 @@
         im.src = imgURL;
       }
 
-      // Logic for displaying *other users'* posts
       for (const post of data.posts || []) {
           if (savedId && post.id === savedId) continue;
           const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
@@ -423,7 +427,8 @@
     }
   }
   
-  $: if (browser && map && step === 2) {
+  // --- UPDATED: Disable desktop ghost box on mobile ---
+  $: if (browser && map && step === 2 && !isMobile) {
     if (ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat)) {
       fit(curPx);
       lockM();
@@ -461,6 +466,10 @@
   }
 </script>
 
+{#if step === 2 && isMobile}
+  <div class="mobile-crosshair">+</div>
+{/if}
+
 <div class="map-container" bind:this={mapContainer}></div>
 
 {#if !isCompact}
@@ -479,7 +488,12 @@
     {#if step === 2}
       <div class="row">
         <span class="tag">2/3</span>
-        <span class="help">Click on the map to place</span>
+        {#if isMobile}
+          <span class="help">Pan the map to position</span>
+          <button class="btn" on:click={placeAtCenter}>📍 Place Here</button>
+        {:else}
+          <span class="help">Click on the map to place</span>
+        {/if}
       </div>
     {/if}
 
@@ -524,6 +538,20 @@
     inset: 0;
   }
   
+  /* NEW: Style for the mobile crosshair */
+  .mobile-crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000;
+    font-size: 32px;
+    font-weight: 500;
+    color: #1e90ff;
+    pointer-events: none;
+    text-shadow: 0 0 5px rgba(255, 255, 255, 0.8);
+  }
+
   .ui {
     position: fixed;
     left: 50%;
