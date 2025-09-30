@@ -239,17 +239,51 @@
     }
   }
 
+  function isNewDay() {
+    const RESET_HOUR = 3; // 3 AM
+    const now = new Date().getTime();
+    const lastReset = parseInt(localStorage.getItem('lm_lastReset') || '0');
+
+    // Get the timestamp for 3 AM today
+    const todaysReset = new Date();
+    todaysReset.setHours(RESET_HOUR, 0, 0, 0);
+    const todaysResetTime = todaysReset.getTime();
+
+    // Check if the current time is past 3 AM AND the last reset was before 3 AM today
+    if (now > todaysResetTime && lastReset < todaysResetTime) {
+        console.log("Daily reset triggered.");
+        localStorage.setItem('lm_lastReset', now.toString());
+        return true;
+    }
+
+    return false;
+  }
+
   onMount(() => {
+    // Check if it's a new day FIRST
+    const startFresh = isNewDay();
+
     async function initializeUser() {
+      // 1. Set the deviceId and cookie
       deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
       localStorage.setItem(C.LS_DEV, deviceId);
       if (browser) {
           document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
       }
+
+      // If it's a new day, DON'T fetch the old post
+      if (startFresh) {
+          return;
+      }
+
+      // 2. Fetch the user's OWN post from the new API endpoint
       try {
         const response = await fetch('/api/items/me');
         if (!response.ok) throw new Error('Failed to fetch user post');
+        
         const { post } = await response.json();
+
+        // 3. If a post is found, restore the state
         if (post) {
           restoreState(post);
         }
@@ -260,6 +294,7 @@
 
     initializeUser();
     
+    // The rest of the onMount logic is for setting up the map
     map = new maplibregl.Map({
       container: mapContainer,
       center: anchor ? [anchor.lng, anchor.lat] : C.START,
@@ -274,6 +309,7 @@
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
     map.on('load', () => {
+      // Logic for restoring *your* image
       if (anchor && imgURL) {
         const im = new Image();
         im.onload = () => {
@@ -287,13 +323,12 @@
         im.src = imgURL;
       }
 
+      // Logic for displaying *other users'* posts
       for (const post of data.posts || []) {
           if (savedId && post.id === savedId) continue;
           const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
-          if (!post.image_url || !isLatLngValid) {
-              console.warn(`Skipping post ID ${post.id}: Missing image_url or invalid coordinates.`);
-              continue; 
-          }
+          if (!post.image_url || !isLatLngValid) continue; 
+          
           const sourceId = `post-src-${post.id}`;
           const layerId = `post-layer-${post.id}`;
           const otherNatSize = post.natsize || { w: 256, h: 256 };
@@ -308,6 +343,7 @@
           const s = Math.pow(2, map.getZoom() - C.ZREF);
           const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
           const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
+          
           map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
           map.addLayer({
               id: layerId,
