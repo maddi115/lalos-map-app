@@ -37,9 +37,10 @@
   
   let domCmt = null;
   let youMarker = null;
-
-  // --- NEW: Mobile Detection State ---
   let isMobile = false;
+
+  // Set to track posts already on the map
+  let displayedPostIds = new Set();
 
   $: curPx = Math.round(C.MINPX + (C.MAXPX - C.MINPX) * (1 - Math.pow(1 - Math.min(1, Math.max(0, tAct / C.GOAL)), 3)));
 
@@ -132,27 +133,34 @@
     const s = Math.pow(2, map.getZoom() - C.ZREF);
     geoSize = { w: baseSize.w * r.x * s, h: baseSize.h * r.y * s };
   }
-
-  async function maybeSaveSize(px) {
-    if (!savedId || !anchor || !imgURL) return;
-    if (Math.abs(px - (lastPxSaved || 0)) >= C.SAVE_DPX) {
+  
+  async function maybeSaveSize(curPx) {
+    if (Math.abs(curPx - lastPxSaved) >= C.SAVE_DPX) {
       try {
-        const response = await fetch(`/api/items?id=${savedId}`, {
+        await fetch(`/api/items?id=${savedId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pxAtPlace: Math.round(px) })
+          body: JSON.stringify({ pxatplace: curPx }),
+          keepalive: true
         });
-        if (!response.ok) {
-            if (response.status === 404) {
-                console.warn("Post not found on server, stopping size updates.");
-                clearInterval(timer); 
-            }
-            throw new Error(`Failed to save size update. Status: ${response.status}`);
-        }
-        lastPxSaved = Math.round(px);
-      } catch(e) {
-        console.error("Failed to save size", e);
+        lastPxSaved = curPx;
+      } catch (e) {
+        console.error('Failed to save size', e);
       }
+    }
+  }
+
+  async function finalSave() {
+    if (!savedId) return;
+    try {
+      await fetch(`/api/items?id=${savedId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pxAtPlace: curPx }),
+        keepalive: true
+      });
+    } catch (e) {
+      console.error('Final save failed', e);
     }
   }
 
@@ -207,7 +215,6 @@
   }
   
   function placeOnClick(e) {
-    // --- UPDATED: Disable click-to-place on mobile ---
     if (step !== 2 || isMobile) return;
     const { lng, lat } = e.lngLat;
     if (Geo.inside(lng, lat)) {
@@ -218,7 +225,6 @@
     }
   }
   
-  // --- NEW: Function for mobile "Place Here" button ---
   function placeAtCenter() {
     if (step !== 2) return;
     const { lng, lat } = map.getCenter();
@@ -270,30 +276,84 @@
     return false;
   }
 
+  async function loadPostsInView() {
+    if (!map || map.isMoving()) return;
+    
+    const bounds = map.getBounds();
+    const sw = bounds.getSouthWest();
+    const ne = bounds.getNorthEast();
+
+    try {
+      const response = await fetch(`/api/items/near?min_lon=${sw.lng}&min_lat=${sw.lat}&max_lon=${ne.lng}&max_lat=${ne.lat}`);
+      if (!response.ok) throw new Error('Failed to fetch nearby posts');
+
+      const posts = await response.json();
+
+      for (const post of posts) {
+        // We only want to add posts that aren't already on the map, and aren't our own
+        if (displayedPostIds.has(post.id) || (savedId && post.id === savedId)) {
+          continue;
+        }
+
+        displayedPostIds.add(post.id);
+
+        const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
+        if (!post.image_url || !isLatLngValid) continue; 
+        
+        const sourceId = `post-src-${post.id}`;
+        const layerId = `post-layer-${post.id}`;
+        const otherNatSize = post.natsize || { w: 256, h: 256 };
+        const otherCurPx = post.pxatplace || C.MINPX;
+        const a = otherNatSize.w / otherNatSize.h;
+        const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
+        const c = { lng: post.lng, lat: post.lat };
+        const p = map.project([c.lng, c.lat]);
+        const x = map.unproject([p.x + 1, p.y]);
+        const y = map.unproject([p.x, p.y + 1]);
+        const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
+        const s = Math.pow(2, map.getZoom() - C.ZREF);
+        const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
+        const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
+        
+        map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
+        map.addLayer({
+            id: layerId,
+            type: 'raster',
+            source: sourceId,
+            paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
+        });
+        
+        if (post.comment) {
+            const el = document.createElement("div");
+            el.style.cssText = "font:700 11px/1.2 Inter;color:#111;background:rgba(255,255,255,.9);padding:3px 7px;border-radius:8px;border:1px solid rgba(0,0,0,.1);box-shadow:0 1px 4px rgba(0,0,0,.15);pointer-events:none;max-width:150px;text-align:center;";
+            el.textContent = post.comment;
+            const latUp = post.lat + ((otherGeoSize.h / 2) + 5) / C.E111;
+            new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([post.lng, latUp]).addTo(map);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load posts in view:", e);
+    }
+  }
+
   onMount(() => {
-    // --- NEW: Detect mobile device on mount ---
+    window.addEventListener('pagehide', finalSave);
     if (browser) {
       isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
     }
-
     const startFresh = isNewDay();
-
     async function initializeUser() {
       deviceId = localStorage.getItem(C.LS_DEV) || crypto.randomUUID();
       localStorage.setItem(C.LS_DEV, deviceId);
       if (browser) {
           document.cookie = `deviceId=${deviceId}; path=/; max-age=${365 * 24 * 60 * 60}; samesite=Lax`;
       }
-      if (startFresh) {
-          return;
-      }
+      if (startFresh) return;
       try {
         const response = await fetch('/api/items/me');
         if (!response.ok) throw new Error('Failed to fetch user post');
         const { post } = await response.json();
-        if (post) {
-          restoreState(post);
-        }
+        if (post) restoreState(post);
       } catch (e) {
         console.error("Could not initialize user state:", e);
       }
@@ -314,6 +374,7 @@
     map.on('mouseout', () => { ghostCoords = null; });
     map.on('zoomend', () => { mapZoom = map.getZoom(); });
     
+    let liveFeedInterval;
     map.on('load', () => {
       if (anchor && imgURL) {
         const im = new Image();
@@ -328,41 +389,9 @@
         im.src = imgURL;
       }
 
-      for (const post of data.posts || []) {
-          if (savedId && post.id === savedId) continue;
-          const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
-          if (!post.image_url || !isLatLngValid) continue; 
-          
-          const sourceId = `post-src-${post.id}`;
-          const layerId = `post-layer-${post.id}`;
-          const otherNatSize = post.natsize || { w: 256, h: 256 };
-          const otherCurPx = post.pxatplace || C.MINPX;
-          const a = otherNatSize.w / otherNatSize.h;
-          const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
-          const c = { lng: post.lng, lat: post.lat };
-          const p = map.project([c.lng, c.lat]);
-          const x = map.unproject([p.x + 1, p.y]);
-          const y = map.unproject([p.x, p.y + 1]);
-          const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
-          const s = Math.pow(2, map.getZoom() - C.ZREF);
-          const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
-          const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
-          
-          map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
-          map.addLayer({
-              id: layerId,
-              type: 'raster',
-              source: sourceId,
-              paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
-          });
-          if (post.comment) {
-              const el = document.createElement("div");
-              el.style.cssText = "font:700 11px/1.2 Inter;color:#111;background:rgba(255,255,255,.9);padding:3px 7px;border-radius:8px;border:1px solid rgba(0,0,0,.1);box-shadow:0 1px 4px rgba(0,0,0,.15);pointer-events:none;max-width:150px;text-align:center;";
-              el.textContent = post.comment;
-              const latUp = post.lat + ((otherGeoSize.h / 2) + 5) / C.E111;
-              new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([post.lng, latUp]).addTo(map);
-          }
-      }
+      loadPostsInView();
+      map.on('moveend', loadPostsInView);
+      liveFeedInterval = setInterval(loadPostsInView, 10000);
     });
 
     timer = setInterval(() => {
@@ -373,7 +402,9 @@
     }, 1000);
     
     return () => {
+      window.removeEventListener('pagehide', finalSave);
       clearInterval(timer);
+      clearInterval(liveFeedInterval);
       map.remove();
     };
   });
@@ -427,7 +458,6 @@
     }
   }
   
-  // --- UPDATED: Disable desktop ghost box on mobile ---
   $: if (browser && map && step === 2 && !isMobile) {
     if (ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat)) {
       fit(curPx);
@@ -451,7 +481,7 @@
         }
     }
     map.getCanvas().style.cursor = ghostCoords && Geo.inside(ghostCoords.lng, ghostCoords.lat) ? 'crosshair' : 'none';
-  } else if (browser && map && step !== 2) {
+  } else if (browser && map && (step !== 2 || isMobile)) {
       const source = map.getSource('gb');
       if (source) {
           if (map.getLayer('gbl')) map.removeLayer('gbl');
@@ -538,7 +568,6 @@
     inset: 0;
   }
   
-  /* NEW: Style for the mobile crosshair */
   .mobile-crosshair {
     position: fixed;
     top: 50%;
