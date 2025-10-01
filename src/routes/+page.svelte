@@ -577,7 +577,7 @@
   <div class="ui compact">
     <span class="tag">Size: {curPx}px / {C.MAXPX}px</span>
     <input class="input tiny" type="text" maxlength="15" placeholder="comment…" bind:value={commentText}/>
-    <a href="{imgURL}" target="_blank" style="font-size: 0.9rem; color: #1e90ff; text-decoration: none;">View Image</a>
+   
   </div>
 {/if}
 
