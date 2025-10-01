@@ -290,45 +290,73 @@
       const posts = await response.json();
 
       for (const post of posts) {
-        // We only want to add posts that aren't already on the map, and aren't our own
-        if (displayedPostIds.has(post.id) || (savedId && post.id === savedId)) {
-          continue;
-        }
-
-        displayedPostIds.add(post.id);
-
         const isLatLngValid = !isNaN(post.lat) && post.lat >= -90 && post.lat <= 90 && !isNaN(post.lng) && post.lng >= -180 && post.lng <= 180;
         if (!post.image_url || !isLatLngValid) continue; 
-        
+
+        // Ignore our own post
+        if (savedId && post.id === savedId) {
+            continue;
+        }
+
         const sourceId = `post-src-${post.id}`;
         const layerId = `post-layer-${post.id}`;
-        const otherNatSize = post.natsize || { w: 256, h: 256 };
-        const otherCurPx = post.pxatplace || C.MINPX;
-        const a = otherNatSize.w / otherNatSize.h;
-        const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
-        const c = { lng: post.lng, lat: post.lat };
-        const p = map.project([c.lng, c.lat]);
-        const x = map.unproject([p.x + 1, p.y]);
-        const y = map.unproject([p.x, p.y + 1]);
-        const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
-        const s = Math.pow(2, map.getZoom() - C.ZREF);
-        const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
-        const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
         
-        map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
-        map.addLayer({
-            id: layerId,
-            type: 'raster',
-            source: sourceId,
-            paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
-        });
-        
+        // Handle comment updates
+        const existingMarker = document.querySelector(`[data-post-id="${post.id}"]`);
         if (post.comment) {
+          // If the post has a comment, and a marker doesn't exist, create one
+          if (!existingMarker) {
             const el = document.createElement("div");
             el.style.cssText = "font:700 11px/1.2 Inter;color:#111;background:rgba(255,255,255,.9);padding:3px 7px;border-radius:8px;border:1px solid rgba(0,0,0,.1);box-shadow:0 1px 4px rgba(0,0,0,.15);pointer-events:none;max-width:150px;text-align:center;";
             el.textContent = post.comment;
+            el.dataset.postId = post.id;
+            const otherNatSize = post.natsize || { w: 256, h: 256 };
+            const a = otherNatSize.w / otherNatSize.h;
+            const otherBaseSize = a >= 1 ? { w: post.pxatplace || C.MINPX, h: Math.round((post.pxatplace || C.MINPX) / a) } : { h: post.pxatplace || C.MINPX, w: Math.round((post.pxatplace || C.MINPX) * a) };
+            const c = { lng: post.lng, lat: post.lat };
+            const p = map.project([c.lng, c.lat]);
+            const x = map.unproject([p.x + 1, p.y]);
+            const y = map.unproject([p.x, p.y + 1]);
+            const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
+            const s = Math.pow(2, map.getZoom() - C.ZREF);
+            const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
             const latUp = post.lat + ((otherGeoSize.h / 2) + 5) / C.E111;
             new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([post.lng, latUp]).addTo(map);
+          } else {
+            // If a marker exists, check if the comment text has changed and update it
+            if (existingMarker.textContent !== post.comment) {
+              existingMarker.textContent = post.comment;
+            }
+          }
+        } else if (existingMarker) {
+          // If the post no longer has a comment but a marker exists, remove it
+          existingMarker.remove();
+        }
+
+        // Only add the image layer if it doesn't already exist on the map
+        if (!displayedPostIds.has(post.id)) {
+          displayedPostIds.add(post.id);
+
+          const otherNatSize = post.natsize || { w: 256, h: 256 };
+          const otherCurPx = post.pxatplace || C.MINPX;
+          const a = otherNatSize.w / otherNatSize.h;
+          const otherBaseSize = a >= 1 ? { w: otherCurPx, h: Math.round(otherCurPx / a) } : { h: otherCurPx, w: Math.round(otherCurPx * a) };
+          const c = { lng: post.lng, lat: post.lat };
+          const p = map.project([c.lng, c.lat]);
+          const x = map.unproject([p.x + 1, p.y]);
+          const y = map.unproject([p.x, p.y + 1]);
+          const r = { x: Math.abs((x.lng - c.lng) * (C.E111 * Math.cos(c.lat * C.D2R))), y: Math.abs((y.lat - c.lat) * C.E111) };
+          const s = Math.pow(2, map.getZoom() - C.ZREF);
+          const otherGeoSize = { w: otherBaseSize.w * r.x * s, h: otherBaseSize.h * r.y * s };
+          const coordinates = Geo.quad(post.lng, post.lat, otherGeoSize.w, otherGeoSize.h);
+          
+          map.addSource(sourceId, { type: 'image', url: post.image_url, coordinates: coordinates });
+          map.addLayer({
+              id: layerId,
+              type: 'raster',
+              source: sourceId,
+              paint: { 'raster-fade-duration': 0, 'raster-opacity': 0.95 }
+          });
         }
       }
     } catch (e) {
